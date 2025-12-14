@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useConnection, useAnchorWallet } from "@solana/wallet-adapter-react";
 import { PublicKey, SystemProgram } from "@solana/web3.js";
 import { Program, AnchorProvider } from "@coral-xyz/anchor";
@@ -18,6 +18,7 @@ export function useProfiles() {
   const [profiles, setProfiles] = useState<ProfileWithFollowStatus[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fetchingRef = useRef(false);
 
   // Program ID from your Anchor.toml
   const PROGRAM_ID = new PublicKey("o7WMnMvBfhf21mXMeoi2yAdmfiCsEaKGZE3DHT1E1qF");
@@ -46,23 +47,56 @@ export function useProfiles() {
     ], PROGRAM_ID)[0];
   };
 
-  // Check if current user follows a specific profile
-  const checkFollowStatus = async (profileAuthority: PublicKey): Promise<{ isFollowing: boolean; followPda: PublicKey | null }> => {
-    if (!wallet) return { isFollowing: false, followPda: null };
-
-    try {
-      const followPda = deriveFollowPda(wallet.publicKey, profileAuthority);
-      await program?.account.follow.fetch(followPda);
-      return { isFollowing: true, followPda };
-    } catch (err) {
-      return { isFollowing: false, followPda: null };
+  const batchCheckFollowStatus = useCallback(async (
+    profileAuthorities: PublicKey[]
+  ): Promise<Map<string, { isFollowing: boolean; followPda: PublicKey | null }>> => {
+    if (!wallet || !program) {
+      return new Map();
     }
-  };
 
-  // Fetch all profiles
-  const fetchAllProfiles = async () => {
+    // Derive all follow PDAs at once
+    const followPdas: PublicKey[] = [];
+    const authorityToFollowPda = new Map<string, PublicKey>();
+    
+    profileAuthorities.forEach((authority) => {
+      const followPda = deriveFollowPda(wallet.publicKey, authority);
+      followPdas.push(followPda);
+      authorityToFollowPda.set(authority.toString(), followPda);
+    });
+
+    // Batch fetch all follow accounts in ONE RPC call
+    const followAccounts = await connection.getMultipleAccountsInfo(followPdas);
+    
+    // Create result map
+    const resultMap = new Map<string, { isFollowing: boolean; followPda: PublicKey | null }>();
+    
+    followAccounts.forEach((accountInfo, index) => {
+      const followPda = followPdas[index];
+      const authority = Array.from(authorityToFollowPda.entries()).find(
+        ([_, pda]) => pda.equals(followPda)
+      )?.[0];
+      
+      if (authority) {
+        resultMap.set(authority, {
+          isFollowing: accountInfo !== null,
+          followPda: accountInfo ? followPda : null
+        });
+      }
+    });
+
+    return resultMap;
+  }, [wallet, program, connection]);
+
+  // Fetch all profiles with batch follow status check
+  const fetchAllProfiles = useCallback(async () => {
     if (!program || !wallet) return;
 
+    // Prevent duplicate calls
+    if (fetchingRef.current) {
+      return;
+    }
+
+    fetchingRef.current = true;
     setIsLoading(true);
     setError(null);
 
@@ -70,16 +104,27 @@ export function useProfiles() {
       // Fetch all user profiles
       const allProfiles = await program.account.userProfile.all();
       
-      // Filter out current user's profile and add follow status
-      const profilesWithStatus: ProfileWithFollowStatus[] = [];
-      
-      for (const profileAccount of allProfiles) {
+      // Filter out current user's profile
+      const otherProfiles = allProfiles.filter(
+        (profileAccount) => !profileAccount.account.authority.equals(wallet.publicKey)
+      );
+
+      // Extract all profile authorities
+      const profileAuthorities = otherProfiles.map(
+        (profileAccount) => profileAccount.account.authority
+      );
+
+      // Batch check follow status for ALL profiles at once
+      const followStatusMap = await batchCheckFollowStatus(profileAuthorities);
+
+      // Build profiles with follow status
+      const profilesWithStatus: ProfileWithFollowStatus[] = otherProfiles.map((profileAccount) => {
         const profileData = profileAccount.account;
-        
-        // Skip current user's profile
-        if (profileData.authority.equals(wallet.publicKey)) {
-          continue;
-        }
+        const authorityKey = profileData.authority.toString();
+        const followStatus = followStatusMap.get(authorityKey) || { 
+          isFollowing: false, 
+          followPda: null 
+        };
 
         const userProfile: UserProfile = {
           authority: profileData.authority,
@@ -92,15 +137,12 @@ export function useProfiles() {
           updatedAt: profileData.updatedAt.toNumber(),
         };
 
-        // Check follow status
-        const followStatus = await checkFollowStatus(profileData.authority);
-
-        profilesWithStatus.push({
+        return {
           ...userProfile,
           isFollowing: followStatus.isFollowing,
           followPda: followStatus.followPda,
-        });
-      }
+        };
+      });
 
       setProfiles(profilesWithStatus);
     } catch (err: any) {
@@ -108,8 +150,9 @@ export function useProfiles() {
       console.error("Error fetching profiles:", err);
     } finally {
       setIsLoading(false);
+      fetchingRef.current = false;
     }
-  };
+  }, [program, wallet, batchCheckFollowStatus]);
 
   // Follow a user
   const followUser = async (profileAuthority: PublicKey) => {
@@ -134,10 +177,8 @@ export function useProfiles() {
         .followUserProfile()
         .accounts({
           follower: wallet.publicKey,
-        //   follow: followPda,
           followerProfile: followerProfilePda,
           followingProfile: followingProfilePda,
-        //   systemProgram: SystemProgram.programId,
         })
         .rpc();
 
@@ -173,7 +214,6 @@ export function useProfiles() {
         .unfollowUserProfile()
         .accounts({
           follower: wallet.publicKey,
-        //   follow: followPda,
           followerProfile: followerProfilePda,
           followingProfile: followingProfilePda,
         })
@@ -194,7 +234,7 @@ export function useProfiles() {
     } else {
       setProfiles([]);
     }
-  }, [wallet, program]);
+  }, [wallet, program, fetchAllProfiles]);
 
   return {
     profiles,

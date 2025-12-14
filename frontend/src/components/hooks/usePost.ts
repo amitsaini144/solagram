@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useConnection, useAnchorWallet } from "@solana/wallet-adapter-react";
 import { PublicKey, Transaction, SystemProgram } from "@solana/web3.js";
 import { Program, AnchorProvider } from "@coral-xyz/anchor";
@@ -35,6 +35,7 @@ export function usePost() {
     const [posts, setPosts] = useState([]);
     const [allPosts, setAllPosts] = useState([]);
     const { profilePda } = useUserProfile();
+    const fetchingRef = useRef(false);
 
     const PROGRAM_ID = new PublicKey("o7WMnMvBfhf21mXMeoi2yAdmfiCsEaKGZE3DHT1E1qF");
 
@@ -150,46 +151,97 @@ export function usePost() {
         }
     }
 
-    const fetchAllPosts = async () => {
+    const fetchAllPosts = useCallback(async () => {
         if (!program || !wallet) {
             return;
         }
 
+        // Prevent duplicate calls
+        if (fetchingRef.current) {
+            return;
+        }
+
+        fetchingRef.current = true;
+        setIsLoading(true);
+
         try {
+            // Fetch all posts in one call
             const allPostsResponse = await program.account.post.all();
 
-            // Fetch profile data for each post creator
-        const postsWithHandles = await Promise.all(
-            allPostsResponse.map(async (post: any) => {
-                try {
-                    // Derive profile PDA for the creator
-                    const creatorProfilePda = PublicKey.findProgramAddressSync([
-                        Buffer.from("profile"),
-                        post.account.creator.toBuffer()
-                    ], PROGRAM_ID)[0];
-                    
-                    // Fetch the profile
-                    const profileAccount = await program.account.userProfile.fetch(creatorProfilePda);
-                    
-                    return {
-                        ...post,
-                        creatorHandle: profileAccount.handle
-                    };
-                } catch (err) {
-                    // If profile doesn't exist, use fallback
-                    return {
-                        ...post,
-                        creatorHandle: `User ${post.account.creator.toString().slice(0, 8)}...`
-                    };
+            // Get unique creators to avoid duplicate profile fetches
+            const uniqueCreators = new Map<string, PublicKey>();
+            allPostsResponse.forEach((post: any) => {
+                const creatorKey = post.account.creator.toString();
+                if (!uniqueCreators.has(creatorKey)) {
+                    uniqueCreators.set(creatorKey, post.account.creator);
                 }
-            })
-        );
+            });
 
-        setAllPosts(postsWithHandles as unknown as any);
+            // Derive all profile PDAs
+            const profilePdas: PublicKey[] = [];
+            const creatorToPda = new Map<string, PublicKey>();
+
+            uniqueCreators.forEach((creator) => {
+                const creatorProfilePda = PublicKey.findProgramAddressSync([
+                    Buffer.from("profile"),
+                    creator.toBuffer()
+                ], PROGRAM_ID)[0];
+                profilePdas.push(creatorProfilePda);
+                creatorToPda.set(creator.toString(), creatorProfilePda);
+            });
+
+            // Batch fetch all profiles in one RPC call
+            const profileAccounts = await connection.getMultipleAccountsInfo(profilePdas);
+
+            // Create a map of profile PDA to handle
+            const profileMap = new Map<string, string>();
+            profileAccounts.forEach((accountInfo, index) => {
+                if (accountInfo) {
+                    try {
+                        // Decode the account data
+                        const profileData = program.coder.accounts.decode(
+                            "userProfile",
+                            accountInfo.data
+                        );
+                        const pda = profilePdas[index];
+                        const creator = Array.from(creatorToPda.entries()).find(
+                            ([_, pdaKey]) => pdaKey.equals(pda)
+                        )?.[0];
+                        if (creator) {
+                            profileMap.set(creator, profileData.handle);
+                        }
+                    } catch (err) {
+                        // Profile decode failed, will use fallback
+                    }
+                }
+            });
+
+            // Map posts with handles
+            const postsWithHandles = allPostsResponse.map((post: any) => {
+                const creatorKey = post.account.creator.toString();
+                const handle = profileMap.get(creatorKey) || `User ${creatorKey.slice(0, 8)}...`;
+
+                return {
+                    ...post,
+                    creatorHandle: handle
+                };
+            });
+
+            const sortedPosts = postsWithHandles.sort((a: any, b: any) => {
+                return (
+                    Number(b.account.createdAt) - Number(a.account.createdAt)
+                );
+            });
+
+            setAllPosts(sortedPosts as unknown as any);
         } catch (err: any) {
             console.error("Error fetching posts:", err);
+            setError(err.message || "Failed to fetch posts");
+        } finally {
+            setIsLoading(false);
+            fetchingRef.current = false;
         }
-    }
+    }, [program, wallet, connection]);
 
 
     const deletePost = async (mediaUri: string) => {

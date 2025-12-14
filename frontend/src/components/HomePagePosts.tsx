@@ -1,12 +1,13 @@
 "use client"
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { usePost } from "./hooks/usePost";
 import { Heart, MessageCircle, Bookmark, MoreHorizontal, User, Smile, Frown, Laugh, Zap, Angry } from "lucide-react";
 import { Button } from "./ui/button";
 import CommentDialog from "./CommentDialog";
 import { PublicKey } from "@solana/web3.js";
 import { toast } from "sonner";
+import { useAnchorWallet } from "@solana/wallet-adapter-react";
 
 interface PostData {
     account: {
@@ -29,15 +30,27 @@ interface PostData {
 
 const HomePagePosts = () => {
     const { allPosts, isLoading, error, fetchAllPosts } = usePost();
+    const wallet = useAnchorWallet();
     const [selectedPost, setSelectedPost] = useState<{ pda: PublicKey; creator: PublicKey } | null>(null);
     const [reactingPosts, setReactingPosts] = useState<Set<string>>(new Set());
+    const hasFetchedRef = useRef(false);
 
     useEffect(() => {
         const fetchPosts = async () => {
-            await fetchAllPosts();
+            if (wallet && !hasFetchedRef.current) {
+                hasFetchedRef.current = true;
+                await fetchAllPosts();
+            }
         }
         fetchPosts();
-    }, []);
+    }, [wallet, fetchAllPosts]);
+
+    // Reset fetch flag when wallet disconnects
+    useEffect(() => {
+        if (!wallet) {
+            hasFetchedRef.current = false;
+        }
+    }, [wallet]);
 
 
     const handleCommentClick = (postPda: PublicKey, postCreator: PublicKey) => {

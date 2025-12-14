@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useConnection, useAnchorWallet } from "@solana/wallet-adapter-react";
 import { PublicKey, SystemProgram } from "@solana/web3.js";
 import { Program, AnchorProvider } from "@coral-xyz/anchor";
@@ -23,6 +23,8 @@ export function useUserProfile() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fetchingRef = useRef(false);
+  const lastWalletRef = useRef<string | null>(null);
 
   // Program ID from your Anchor.toml
   const PROGRAM_ID = new PublicKey("o7WMnMvBfhf21mXMeoi2yAdmfiCsEaKGZE3DHT1E1qF");
@@ -53,17 +55,14 @@ export function useUserProfile() {
       throw new Error("Program or profile PDA or wallet not available");
     }
 
-      try {
-        const tx = await program.methods
-          .updateUserProfile(handle, bio, avatarUri)
-          .accounts({
-            user: wallet.publicKey,
-            // profile: profilePda,
-            // systemProgram: SystemProgram.programId,
-          }).rpc();
+    try {
+      const tx = await program.methods
+        .updateUserProfile(handle, bio, avatarUri)
+        .accounts({
+          user: wallet.publicKey,
+        }).rpc();
 
       await fetchProfile();
-
       return { success: true, tx };
     } catch (err: any) {
       const errorMessage = getErrorMessage(err.error?.errorCode?.code);
@@ -71,17 +70,31 @@ export function useUserProfile() {
     }
   }
 
-  const fetchProfile = async () => {
-    if (!program || !profilePda) return;
+  // Memoized fetch function with duplicate call prevention
+  const fetchProfile = useCallback(async () => {
+    if (!program || !profilePda) {
+      setProfile(null);
+      return;
+    }
 
+    // Prevent duplicate calls
+    if (fetchingRef.current) {
+      return;
+    }
+
+    // Check if wallet changed - if same wallet, skip if already fetched
+    const currentWalletKey = wallet?.publicKey.toString() || null;
+    if (currentWalletKey === lastWalletRef.current && profile !== null) {
+      return;
+    }
+
+    fetchingRef.current = true;
     setIsLoading(true);
     setError(null);
 
     try {
-      // Use the generated types from idl.ts
       const profileAccount = await program.account.userProfile.fetch(profilePda);
 
-      // Convert the account data to our interface format
       const userProfile: UserProfile = {
         authority: profileAccount.authority,
         handle: profileAccount.handle,
@@ -94,6 +107,7 @@ export function useUserProfile() {
       };
 
       setProfile(userProfile);
+      lastWalletRef.current = currentWalletKey;
     } catch (err: any) {
       if (err.message.includes("Account does not exist")) {
         setProfile(null);
@@ -101,18 +115,21 @@ export function useUserProfile() {
         setError(err.message);
         console.error("Error fetching profile:", err);
       }
+      lastWalletRef.current = currentWalletKey;
     } finally {
       setIsLoading(false);
+      fetchingRef.current = false;
     }
-  };
+  }, [program, profilePda, wallet, profile]);
 
   useEffect(() => {
     if (wallet && program && profilePda) {
       fetchProfile();
     } else {
       setProfile(null);
+      lastWalletRef.current = null;
     }
-  }, [wallet, program, profilePda]);
+  }, [wallet, program, profilePda, fetchProfile]);
 
   return {
     profile,

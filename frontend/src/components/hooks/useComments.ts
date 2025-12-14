@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useConnection, useAnchorWallet } from "@solana/wallet-adapter-react";
 import { PublicKey, SystemProgram } from "@solana/web3.js";
 import { Program, AnchorProvider } from "@coral-xyz/anchor";
@@ -23,6 +23,7 @@ export function useComments() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { profilePda } = useUserProfile();
+  const fetchingRef = useRef<string | null>(null); // Track which post is being fetched
 
   // Program ID from your Anchor.toml
   const PROGRAM_ID = new PublicKey("o7WMnMvBfhf21mXMeoi2yAdmfiCsEaKGZE3DHT1E1qF");
@@ -60,20 +61,17 @@ export function useComments() {
     }
 
     try {
-      // Derive comment PDA
       const commentPda = deriveCommentPda(postPda, content);
       if (!commentPda) {
         throw new Error("Failed to derive comment PDA");
       }
 
-      // Call create_comment instruction
       const tx = await program.methods
         .createComment(content)
         .accounts({
           commenter: wallet.publicKey,
           comment: commentPda,
           post: postPda,
-        //   systemProgram: SystemProgram.programId,
         })
         .rpc();
 
@@ -86,15 +84,23 @@ export function useComments() {
     }
   };
 
-  // Fetch comments for a specific post
-  const fetchCommentsForPost = async (postPda: PublicKey) => {
+  // OPTIMIZED: Fetch comments with duplicate call prevention
+  const fetchCommentsForPost = useCallback(async (postPda: PublicKey) => {
     if (!program) return;
 
+    const postKey = postPda.toString();
+    
+    // Prevent duplicate calls for the same post
+    if (fetchingRef.current === postKey) {
+      return;
+    }
+
+    fetchingRef.current = postKey;
     setIsLoading(true);
     setError(null);
 
     try {
-      // Fetch all comments for this post
+      // 1 RPC call: Fetch all comments for this post
       const postComments = await program.account.comment.all([
         {
           memcmp: {
@@ -124,8 +130,9 @@ export function useComments() {
       console.error("Error fetching comments:", err);
     } finally {
       setIsLoading(false);
+      fetchingRef.current = null;
     }
-  };
+  }, [program]);
 
   return {
     comments,
