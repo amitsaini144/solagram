@@ -83,7 +83,7 @@ export function CreatePostDialog({ refetchAllPosts }: { refetchAllPosts: () => P
     return (
         <Dialog open={isOpen} onOpenChange={handleOpenChange}>
             <DialogTrigger asChild>
-                <Button className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 font-medium">
+                <Button className="text-primary-foreground hover:bg-primary/90 px-4 py-2 font-medium bg-black/80 dark:bg-white">
                     ➕ Post
                 </Button>
             </DialogTrigger>

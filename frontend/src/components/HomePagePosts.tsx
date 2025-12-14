@@ -152,13 +152,12 @@ const HomePagePosts = () => {
                 </div>
 
                 {allPosts.length === 0 && (
-                    <div className="text-center py-20">
-                        <div className="w-24 h-24 mx-auto mb-4 bg-gray-100 rounded-full flex items-center justify-center">
-                            <MessageCircle className="w-12 h-12 text-gray-400" />
+                        <div className="max-w-4xl mx-auto p-6 justify-center text-center">
+                            <h1 className="text-3xl font-bold mb-6">Welcome to Solana Instagram</h1>
+                            <p className="text-muted-foreground mb-6">
+                                Share your moments on the blockchain. Create posts, connect with others, and explore the decentralized social experience.
+                            </p>
                         </div>
-                        <h3 className="text-lg font-semibold text-gray-900 mb-2">No posts yet</h3>
-                        <p className="text-gray-500">Be the first to share something amazing!</p>
-                    </div>
                 )}
             </div>
 
